@@ -112,11 +112,67 @@ void rt_hw_board_init(void)
 #endif /* RT_USING_HEAP */
 }
 
+/*
+ * The legacy SBI_SHUTDOWN call is the only reset entry libcpu/risc-v/common64
+ * provides, and OpenSBI implements it as SRST with reset type SHUTDOWN. On the
+ * QEMU virt machine that lands on the power-off register, so it shuts the
+ * machine down instead of resetting it: "reboot" exits QEMU and the guest
+ * never restarts.
+ *
+ * The SBI v2.0 system-reset extension separates the two. Use it so that
+ * "reboot" really resets and "poweroff" really powers off, falling back to the
+ * legacy call when the firmware does not implement SRST.
+ */
+#define SBI_EXT_ID_SRST          0x53525354UL  /* "SRST" */
+#define SBI_SRST_SYSTEM_RESET     0
+#define SBI_SRST_TYPE_SHUTDOWN    0
+#define SBI_SRST_TYPE_COLD_RESET  1
+
+static rt_bool_t virt_srst_available(void)
+{
+    static rt_bool_t probed, available;
+    struct sbi_ret ret;
+
+    if (probed)
+    {
+        return available;
+    }
+
+    ret = SBI_CALL1(SBI_EXT_ID_BASE, SBI_BASE_PROBE_EXTENSION, SBI_EXT_ID_SRST);
+    available = (ret.error == SBI_SUCCESS) ? RT_TRUE : RT_FALSE;
+    probed = RT_TRUE;
+
+    return available;
+}
+
+static void virt_system_reset(rt_uint32_t type)
+{
+    if (virt_srst_available())
+    {
+        (void)SBI_CALL2(SBI_EXT_ID_SRST, SBI_SRST_SYSTEM_RESET, type, 0);
+    }
+
+    /*
+     * Either SRST is missing or the firmware refused. Shut down instead, which
+     * is the only thing the legacy call can do.
+     */
+    sbi_shutdown();
+}
+
 void rt_hw_cpu_reset(void)
 {
-    sbi_shutdown();
+    virt_system_reset(SBI_SRST_TYPE_COLD_RESET);
 
     while (1)
         ;
 }
 MSH_CMD_EXPORT_ALIAS(rt_hw_cpu_reset, reboot, reset machine);
+
+void rt_hw_cpu_shutdown(void)
+{
+    virt_system_reset(SBI_SRST_TYPE_SHUTDOWN);
+
+    while (1)
+        ;
+}
+MSH_CMD_EXPORT_ALIAS(rt_hw_cpu_shutdown, poweroff, power off machine);
