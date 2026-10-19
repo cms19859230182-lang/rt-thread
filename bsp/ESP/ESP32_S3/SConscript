@@ -1,0 +1,80 @@
+# for module compiling
+import os
+from building import *
+from env_package import find_package_path
+
+Import('RTT_ROOT')
+
+cwd = str(Dir('#'))
+bsp_root = os.path.normpath(os.path.join(cwd, '..'))
+PKG_IDF = find_package_path(bsp_root, 'ESP-IDF-latest',
+                            marker='components/xtensa/esp32s3/include')
+
+# ---------------------------------------------------------------------------
+# FreeRTOS include order is load bearing here.
+#
+# tools/building.py's DefineGroup() does Env.AppendUnique(CPPPATH=...) for each
+# group, so all groups share one ordered include path and *group evaluation
+# order decides which header wins*.
+#
+# The ESP-IDF fork ships scons-only FreeRTOS shims in
+# components/rtthread/scons/include:
+#   - <freertos/FreeRTOS.h>  pulls in ESP-IDF's <freertos/idf_additions.h>
+#     (whose WithCaps family only has declarations here, the definitions are
+#     the fork's scons/idf_additions_wrapper.c) and then hands on to the real
+#     header with #include_next
+#   - <freertos/portmacro.h> #undef's the BSP's vPortYield() macro and declares
+#     it as a real function instead
+#   - <sdkconfig.h>, <arpa/inet.h>
+# Those must come first, or #include_next never reaches the real headers.
+#
+# After them the FreeRTOS-Wrapper package has to come before ESP-IDF's own V11
+# kernel copy (components/freertos/FreeRTOS-Kernel/include): the wrapper is
+# FreeRTOS V10.4.6 and owns FreeRTOS.h / task.h / list.h / queue.h / semphr.h /
+# event_groups.h / timers.h.  The V11 copy is on the path only for the two
+# headers the wrapper does not ship, <freertos/stream_buffer.h> and
+# <freertos/message_buffer.h>, which ESP-IDF's idf_additions.h includes for
+# their handle typedefs.  Letting the V11 copy win instead makes FreeRTOS.h
+# itself V11, which then demands the whole V11 config (configNUMBER_OF_CORES,
+# configMINIMAL_STACK_SIZE, ...) and clashes with the wrapper's StaticList_t and
+# xTaskRemoveFromEventList() signatures.
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Order of the leading include paths (all groups share one ordered CPPPATH,
+# because tools/building.py's DefineGroup() does Env.AppendUnique()):
+#
+#   1. idf_components/include_compat - the BSP's own header shims.  They have
+#      to come first: each one `#undef`s or declares something and then
+#      #include_nexts the ESP-IDF header, and several of those headers are also
+#      reachable from a component's own include dir, which would otherwise win.
+#      (esp_ipc_isr.h is the current case: esp_system/include/ has to be behind
+#      this directory or the shim never gets a chance to run.)
+#   2. components/rtthread/scons/include - the fork's FreeRTOS shims, which
+#      must precede the real FreeRTOS headers so their #include_next finds them.
+#   3. the FreeRTOS-Wrapper package, evaluated below, which has to precede
+#      ESP-IDF's own FreeRTOS V11 kernel copy for the same reason.
+# ---------------------------------------------------------------------------
+Env.PrependUnique(CPPPATH = [os.path.join(cwd, 'idf_components', 'include_compat')])
+Env.PrependUnique(CPPPATH = [PKG_IDF + '/components/rtthread/scons/include'])
+
+objs = []
+
+pkgs_dir = os.path.join(cwd, 'packages')
+if os.path.isdir(pkgs_dir):
+    for name in sorted(os.listdir(pkgs_dir)):
+        path = os.path.join(pkgs_dir, name)
+        # The ESP-IDF package is skipped: its own SConscript only defines
+        # source lists for C3/C6 and aborts on this target, the esp32s3 file
+        # set is picked by idf_components/SConscript.
+        if name.lower().startswith('esp-idf'):
+            continue
+        if os.path.isfile(os.path.join(path, 'SConscript')):
+            objs = objs + SConscript(os.path.join(path, 'SConscript'))
+
+# BSP-owned groups, in dependency-free order. They come after the packages so
+# that components/freertos/FreeRTOS-Kernel/include (added by idf_components)
+# trails the wrapper's headers; see the note above.
+for d in ('main', 'idf_port', 'idf_components'):
+    objs = objs + SConscript(os.path.join(d, 'SConscript'))
+
+Return('objs')

@@ -293,6 +293,15 @@ jobs:
           pip3 install esptool
           echo "RTT_EXEC_PATH=/opt/riscv32-esp-elf/bin" >> $GITHUB_ENV
 
+      - name: Install xtensa-esp-elf ToolChains
+        if: ${{ matrix.legs.RTT_TOOL_CHAIN == 'sourcery-xtensa-esp32s3' && success() }}
+        run: |
+          wget -q https://github.com/espressif/crosstool-NG/releases/download/esp-15.2.0_20251204/xtensa-esp-elf-15.2.0_20251204-x86_64-linux-gnu.tar.xz
+          sudo tar xf xtensa-esp-elf-15.2.0_20251204-x86_64-linux-gnu.tar.xz -C /opt
+          /opt/xtensa-esp-elf/bin/xtensa-esp-elf-gcc --version
+          pip3 install esptool
+          echo "RTT_EXEC_PATH=/opt/xtensa-esp-elf/bin" >> $GITHUB_ENV
+
       - name: Install Arm Musl ToolChains
         if: ${{ matrix.legs.RTT_TOOL_CHAIN == 'sourcery-arm' && matrix.legs.RTT_SMART_TOOL_CHAIN == 'arm-linux-musleabi'  && success() }}
         shell: bash

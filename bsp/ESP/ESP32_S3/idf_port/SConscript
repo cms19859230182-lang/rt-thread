@@ -1,0 +1,76 @@
+import os
+from building import *
+from env_package import find_package_path
+
+Import('rtconfig')
+
+cwd      = GetCurrentDir()
+bsp_root = os.path.normpath(os.path.join(cwd, '..'))
+# pkgs --update-force may place this under bsp/ESP/libraries rather than
+# this BSP's packages directory.
+PKG_IDF  = find_package_path(bsp_root, 'ESP-IDF-latest',
+                             marker='components/xtensa/esp32s3/include')
+
+src = Split("""
+    src/rt-thread_balance_stub.c
+    src/port.c
+    src/port_common.c
+""")
+
+# The Xtensa vector/context building blocks stay in libcpu/xtensa; here we
+# only add the include dirs the ESP-IDF Xtensa port headers expect:
+#   portable/xtensa            -> xt_asm_utils.h
+#   portable/xtensa/include/freertos -> xtensa_rtos.h / xtensa_context.h shim
+#   components/xtensa/include  -> <xtensa/...> generic headers, xtensa_config.h
+#   components/xtensa/esp32s3/include -> <xtensa/config/...> per-SoC config
+# Within each component the per-SoC directory has to come before the generic
+# one: both ship the same header names (hal/efuse_hal.h, soc/soc_caps.h, ...) and
+# only the per-SoC copy declares the peripheral entry points.  idf_port is
+# evaluated before idf_components, so its order also wins for the whole build.
+# The rest are the ESP-IDF v6.1 component include roots that port.c,
+# port_common.c and include/freertos/portmacro.h pull in.  v6.1 moved several
+# of them: driver/include is gone (use esp_driver_*), the newlib shims are in
+# esp_libc/platform_include, and esp_int_wdt.h / crosscore_int.h / esp_task_wdt.h
+# now live under esp_system/include/esp_private.
+CPPPATH = [
+    cwd + '/include',
+    cwd + '/include/freertos',
+    PKG_IDF + '/components/esp_common/include',
+    PKG_IDF + '/components/esp_system/include/esp_private',
+    PKG_IDF + '/components/esp_system/port/include',
+    PKG_IDF + '/components/esp_system/include',
+    PKG_IDF + '/components/esp_hw_support/include/soc',
+    PKG_IDF + '/components/esp_hw_support/port/include',
+    PKG_IDF + '/components/esp_hw_support/include',
+    PKG_IDF + '/components/esp_rom/include',
+    PKG_IDF + '/components/esp_rom/esp32s3/include',
+    PKG_IDF + '/components/esp_libc/platform_include',
+    PKG_IDF + '/components/heap/include',
+    PKG_IDF + '/components/heap/tlsf',
+    PKG_IDF + '/components/log/include',
+    PKG_IDF + '/components/log/include/esp_private',
+    PKG_IDF + '/components/esp_timer/include',
+    PKG_IDF + '/components/esp_ringbuf/include',
+    PKG_IDF + '/components/esp_psram/include',
+    PKG_IDF + '/components/esp_psram/include/esp_private',
+    PKG_IDF + '/components/soc/esp32s3/register',
+    PKG_IDF + '/components/soc/esp32s3/include',
+    PKG_IDF + '/components/soc/include',
+    PKG_IDF + '/components/hal/esp32s3/include',
+    PKG_IDF + '/components/hal/platform_port/include',
+    PKG_IDF + '/components/hal/include',
+    PKG_IDF + '/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos',
+    PKG_IDF + '/components/freertos/FreeRTOS-Kernel/portable/xtensa/include',
+    PKG_IDF + '/components/freertos/FreeRTOS-Kernel/portable/xtensa',
+    PKG_IDF + '/components/freertos/esp_additions/include',
+    # scons-only FreeRTOS shims of the RT-Thread IDF fork: <freertos/portmacro.h>
+    # (turns vPortYield into a real function), <sdkconfig.h>, <arpa/inet.h>.
+    # Must come after the BSP's own include/freertos so #include_next finds it.
+    PKG_IDF + '/components/rtthread/scons/include',
+    PKG_IDF + '/components/xtensa/esp32s3/include',
+    PKG_IDF + '/components/xtensa/include',
+]
+
+group = DefineGroup('idf_port', src, depend = [''], CPPPATH = CPPPATH)
+
+Return('group')

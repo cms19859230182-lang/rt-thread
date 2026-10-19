@@ -1,0 +1,627 @@
+# ESP-IDF component selection for the ESP32-S3 BSP.
+#
+# The ESP-IDF package (packages/ESP-IDF-latest) ships a SConscript that only
+# knows the ESP32-C3 (and, in newer forks, C6) file sets; for the S3 target it
+# raises NameError because no branch defines its source list. Rather than
+# patching the vendored package, the BSP declares its own esp-idf group here.
+#
+# The lists below are the **ESP-IDF v6.1** esp32c3_* sets taken from the package
+# SConscript (curated for v6.1 by the C3/C6 port), with every `esp32c3` path
+# rewritten to its existing `esp32s3` counterpart.  v6.1 renamed the whole
+# peripheral layer (hal/* -> esp_hal_*, driver/* -> esp_driver_*, newlib ->
+# esp_libc), so this list differs substantially from the ESP-IDF v5.1 one it
+# replaces.  Every entry is checked to exist in the package tree.
+#
+# Deliberate differences on top of the C3 set:
+#   - Wi-Fi / BT / wpa / lwip / netif / vfs / nvs / esp_phy / esp_event groups:
+#     not compiled (console-only BSP, matching the BSP's Kconfig defaults)
+#   - components/cxx, esp_pm, app_update, efuse, pthread: kept exactly as C3 so
+#     IDF startup code sees the same symbol set (unused pieces drop out via
+#     --gc-sections)
+#   - RISC-V arch files (components/riscv/*, esp_system/port/arch/riscv) replaced
+#     by their esp_system/port/arch/xtensa counterparts plus the target-
+#     independent components/xtensa interrupt plumbing, and linked against
+#     xtensa/esp32s3/libxt_hal.a (xthal_save_extra_nw / window spill / cp regs)
+#   - No esp32s3 counterpart exists in v6.1 for esp_hw_support adc2_init_cal.c
+#     (S3 has no ADC2), so it is dropped.
+#   - lowpower/port/esp32s3/sleep_cpu.c dropped, same reason as the ESP32-C3
+#     package list: its only possible caller is sleep_modes.c, reached under
+#     CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP && SOC_PM_CPU_RETENTION_BY_RTCCNTL
+#     (both true on S3). RT-Thread owns the idle path and this BSP compiles only
+#     pm_trace/pm_locks/pm_impl out of esp_pm, so that config is kept off (see
+#     sdkconfig_s3.h) and nothing references the file. It is also not
+#     compilable with the config off: esp_sleep_tagmem_pd_low_init()'s #else
+#     branch assigns through s_tag_mem, which the #if above it does not define.
+#     (An upstream v6.1 bug: esp32c3/sleep_cpu.c has no such #else branch.)
+#   - Added because the S3 has capabilities the C3 lacks:
+#       * esp_hal_security/mpu_hal.c   - S3 has MPU regions, C3 has none
+#       * esp_hal_gpio/esp32s3/rtc_io_periph.c - per-target RTC IO table
+#       * spi_flash/spi_flash_wrap.c    - SOC_CACHE_SUPPORT_WRAP=1 on S3 and
+#         cache_utils.c calls spi_flash_wrap_probe()/spi_flash_wrap_enable()
+#       * esp_rom/patches/esp_rom_cache_writeback_esp32s3.S - the S2/S3 cache
+#         ROM shim (esp_rom_cache_esp32s2_esp32s3.c) calls
+#         cache_writeback_items_freeze(), which only exists in that .S
+#       * esp_hal_touch_sens/touch_sens_hal.c - SOC_TOUCH_SENSOR_SUPPORTED=1 on
+#         S3 (0 on C3), so sleep_modes.c's touch_wakeup_prepare() calls
+#         touch_hal_prepare_deep_sleep()
+#   - Left out of the xtensa arch set deliberately: esp_ipc_isr* (dual-core IPI,
+#     CONFIG_ESP_SYSTEM_SINGLE_CORE_MODE makes esp_ipc.c call handlers
+#     directly) and expression_with_stack* (indexes the real FreeRTOS TCB, which
+#     the RT-Thread wrapper does not provide).
+#   - bootloader_sha / secure_boot / flash_encrypt are left out: they need
+#     mbedtls (psa/crypto.h) and secure boot, both off for this BSP.  Nothing
+#     in this build references bootloader_sha256_* either - its only caller,
+#     bootloader_utility.c, is not part of the set - so the weak fallbacks in
+#     ../idf_port/src/rt-thread_balance_stub.c are all that is ever needed.
+#   - esp_hw_support/sleep_modes.c IS built (C3 builds it too, and the
+#     per-SoC rtc_sleep.c calls into it).  What it is *not* allowed to pull in
+#     is the CPU-retention path, so CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP is
+#     kept off - see sdkconfig_s3.h; that also keeps
+#     lowpower/port/esp32s3/sleep_cpu.c out of the set.
+#   - mbedtls sources are not built, so esp_crt_bundle.c (needs mbedtls/pk.h)
+#     and esp_crypto_shared_gdma.c (only reachable from mbedtls aes/sha GDMA)
+#     are dropped as well.
+
+import os
+from building import *
+from env_package import find_package_path
+
+cwd = GetCurrentDir()
+bsp_root = os.path.normpath(os.path.join(cwd, '..'))
+# pkgs --update-force may place this under bsp/ESP/libraries rather than
+# this BSP's packages directory.
+PKG = find_package_path(bsp_root, 'ESP-IDF-latest',
+                        marker='components/xtensa/esp32s3/include')
+
+_rel_src = Split("""
+components/esp_app_format/esp_app_desc.c
+components/esp_ringbuf/ringbuf.c
+components/esp_pm/pm_trace.c
+components/esp_pm/pm_locks.c
+components/esp_pm/pm_impl.c
+components/cxx/cxx_exception_stubs.cpp
+components/cxx/cxx_guards.cpp
+components/app_update/esp_ota_ops.c
+components/esp_common/src/esp_err_to_name.c
+components/bootloader_support/src/esp32s3/bootloader_esp32s3.c
+components/bootloader_support/src/esp32s3/bootloader_soc.c
+components/bootloader_support/src/bootloader_init.c
+components/bootloader_support/src/bootloader_console.c
+components/esp_hal_wdt/xt_wdt_hal.c
+components/hal/efuse_hal.c
+components/esp_hal_gpio/rtc_io_hal.c
+components/hal/esp32s3/efuse_hal.c
+components/hal/mmu_hal.c
+components/esp_hal_wdt/wdt_hal_iram.c
+components/hal/cache_hal.c
+components/esp_hal_gpspi/spi_hal_iram.c
+components/esp_hal_timg/timer_hal.c
+components/esp_hal_gpspi/spi_slave_hal.c
+components/esp_hal_gpspi/spi_hal.c
+components/esp_hal_gpspi/spi_slave_hal_iram.c
+components/esp_hal_ledc/ledc_hal.c
+components/esp_hal_i2c/i2c_hal.c
+components/esp_hal_gpio/gpio_hal.c
+components/esp_hal_i2c/i2c_hal_iram.c
+components/esp_hal_ledc/ledc_hal_iram.c
+components/esp_hal_uart/uart_hal_iram.c
+components/esp_hal_uart/uart_hal.c
+components/esp_hal_mspi/spi_flash_encrypt_hal_iram.c
+components/esp_hal_mspi/spi_flash_hal.c
+components/esp_hal_security/sha_hal.c
+components/esp_hal_systimer/systimer_hal.c
+components/esp_hal_ana_conv/adc_oneshot_hal.c
+components/esp_hal_ana_conv/temperature_sensor_hal.c
+components/esp_hal_rmt/rmt_hal.c
+components/esp_hal_gpio/sdm_hal.c
+components/esp_hal_ana_conv/adc_hal_common.c
+components/esp_hal_mspi/spi_flash_hal_iram.c
+components/esp_hal_security/ds_hal.c
+components/esp_hal_dma/gdma_hal_top.c
+components/esp_hal_dma/gdma_hal_ahb_v1.c
+components/esp_hal_clock/esp32s3/clk_tree_hal.c
+components/esp_hal_pmu/brownout_hal.c
+components/esp_hal_i2s/i2s_hal.c
+components/esp_hal_mspi/spi_flash_hal_gpspi.c
+components/esp_hal_pmu/esp32s3/rtc_cntl_hal.c
+components/esp_hal_ana_conv/adc_hal.c
+components/esp_hal_security/aes_hal.c
+components/esp_hal_security/hmac_hal.c
+components/esp_hal_gpspi/spi_slave_hd_hal.c
+components/soc/lldesc.c
+components/soc/dport_access_common.c
+components/soc/esp32s3/gpio_periph.c
+components/esp_hal_gpio/esp32s3/sdm_periph.c
+components/soc/esp32s3/interrupts.c
+components/esp_hal_rmt/esp32s3/rmt_periph.c
+components/esp_hal_ledc/esp32s3/ledc_periph.c
+components/esp_hal_i2s/esp32s3/i2s_periph.c
+components/esp_hal_gpio/esp32s3/dedic_gpio_periph.c
+components/esp_hal_ana_conv/esp32s3/adc_periph.c
+components/esp_hal_dma/esp32s3/gdma_periph.c
+components/esp_hal_i2c/esp32s3/i2c_periph.c
+components/esp_hal_gpspi/esp32s3/spi_periph.c
+components/esp_hal_ana_conv/esp32s3/temperature_sensor_periph.c
+components/esp_hal_uart/esp32s3/uart_periph.c
+components/esp_hal_timg/esp32s3/timer_periph.c
+components/soc/esp32s3/mpi_periph.c
+components/esp_hw_support/esp_memory_utils.c
+components/esp_hw_support/hw_random.c
+components/esp_hw_support/clk_ctrl_os.c
+components/esp_hw_support/esp_clk.c
+components/esp_hw_support/cpu.c
+components/esp_hw_support/mac_addr.c
+components/esp_hw_support/periph_ctrl.c
+components/esp_hw_support/sleep_gpio.c
+components/esp_hw_support/rtc_module.c
+components/esp_hw_support/intr_alloc.c
+components/esp_hw_support/regi2c_ctrl.c
+components/esp_hw_support/port/esp32s3/systimer.c
+components/esp_hw_support/adc_share_hw_ctrl.c
+components/esp_hw_support/port/esp32s3/rtc_clk_init.c
+components/esp_driver_dma/src/esp_async_memcpy.c
+components/esp_hw_support/port/esp32s3/rtc_sleep.c
+components/esp_hw_support/port/esp32s3/io_mux.c
+components/esp_hw_support/sleep_modes.c
+components/esp_driver_dma/src/gdma.c
+components/esp_hw_support/port/esp32s3/rtc_init.c
+components/esp_hw_support/port/esp32s3/rtc_time.c
+components/esp_hw_support/port/esp32s3/chip_info.c
+components/esp_hw_support/port/esp32s3/rtc_clk.c
+components/esp_security/src/esp_hmac.c
+components/esp_security/src/esp_crypto_lock.c
+components/esp_hw_support/port/esp_memprot_conv.c
+components/esp_security/src/esp_ds.c
+components/esp_hw_support/port/esp32s3/esp_memprot.c
+components/esp_hw_support/port/esp32s3/esp_clk_tree.c
+components/esp_hw_support/port/esp32s3/cpu_region_protect.c
+components/esp_hw_support/port/esp32s3/esp_cpu_intr.c
+components/esp_hw_support/port/esp32s3/sar_periph_ctrl.c
+components/esp_hw_support/sar_tsens_ctrl.c
+components/esp_hw_support/spi_share_hw_ctrl.c
+components/esp_hw_support/esp_gpio_reserve.c
+components/esp_hw_support/sar_periph_ctrl_common.c
+components/esp_hw_support/clk_utils.c
+components/esp_hw_support/sleep_cache.c
+components/esp_hw_support/sleep_console.c
+components/esp_hw_support/sleep_event.c
+components/esp_hw_support/sleep_modem.c
+components/esp_hw_support/sleep_uart.c
+components/esp_hw_support/mspi/mspi_timing_tuning/mspi_timing_tuning.c
+components/esp_hw_support/mspi/mspi_timing_tuning/port/esp32s3/mspi_timing_config.c
+components/esp_security/src/esp_crypto_periph_clk.c
+components/esp_security/src/esp32s3/esp_crypto_clk.c
+components/esp_mm/esp_mmu_map.c
+components/esp_mm/esp_cache_utils.c
+components/esp_mm/esp_cache_msync.c
+components/esp_mm/port/esp32s3/ext_mem_layout.c
+components/esp_hw_support/heap_align_hw.c
+components/esp_hw_support/port/esp_clk_tree_common.c
+components/bootloader_support/src/bootloader_random_esp32s3.c
+components/bootloader_support/src/bootloader_mem.c
+components/bootloader_support/src/bootloader_common.c
+components/bootloader_support/src/bootloader_clock_init.c
+components/bootloader_support/src/bootloader_random.c
+components/bootloader_support/src/bootloader_common_loader.c
+components/bootloader_support/src/flash_partitions.c
+components/bootloader_support/bootloader_flash/src/bootloader_flash.c
+components/bootloader_support/src/flash_encrypt.c
+components/bootloader_support/src/secure_boot.c
+components/bootloader_support/src/bootloader_efuse.c
+components/bootloader_support/src/bootloader_utility.c
+components/bootloader_support/src/esp_image_format.c
+components/bootloader_support/bootloader_flash/src/bootloader_flash_config_esp32s3.c
+components/bootloader_support/bootloader_flash/src/flash_qio_mode.c
+components/esp_system/int_wdt.c
+components/esp_system/esp_err.c
+components/esp_system/esp_ipc.c
+components/esp_system/crosscore_int.c
+components/esp_system/port/soc/esp32s3/reset_reason.c
+components/esp_system/esp_system.c
+components/esp_system/freertos_hooks.c
+components/esp_system/stack_check.c
+components/esp_system/panic.c
+components/esp_system/system_time.c
+components/esp_system/task_wdt/task_wdt.c
+components/esp_system/task_wdt/task_wdt_impl_timergroup.c
+components/esp_system/startup.c
+components/esp_system/ubsan.c
+components/esp_system/xt_wdt.c
+components/esp_system/port/soc/esp32s3/cache_err_int.c
+components/esp_system/port/cpu_start.c
+components/esp_system/port/soc/esp32s3/apb_backup_dma.c
+components/esp_system/port/panic_handler.c
+components/esp_system/port/soc/esp32s3/system_internal.c
+components/esp_system/port/soc/esp32s3/clk.c
+components/esp_system/eh_frame_parser.c
+components/esp_system/port/esp_system_chip.c
+components/esp_hal_security/mpi_hal.c
+components/esp_libc/src/timekeeping.c
+components/esp_rom/patches/esp_rom_cache_esp32s2_esp32s3.c
+components/esp_rom/patches/esp_rom_sys.c
+components/esp_rom/patches/esp_rom_crc.c
+components/esp_rom/patches/esp_rom_spiflash.c
+components/esp_rom/patches/esp_rom_efuse.c
+components/heap/port/esp32s3/memory_layout.c
+components/heap/multi_heap.c
+components/heap/port/memory_layout_utils.c
+components/heap/heap_caps_init.c
+components/heap/heap_caps.c
+components/heap/heap_caps_base.c
+components/heap/tlsf/tlsf.c
+components/spi_flash/flash_brownout_hook.c
+components/spi_flash/spi_flash_chip_drivers.c
+components/spi_flash/spi_flash_chip_issi.c
+components/esp_partition/partition_target.c
+components/esp_partition/partition.c
+components/spi_flash/spi_flash_chip_gd.c
+components/spi_flash/spi_flash_chip_mxic.c
+components/spi_flash/spi_flash_chip_boya.c
+components/spi_flash/spi_flash_chip_winbond.c
+components/spi_flash/spi_flash_chip_generic.c
+components/spi_flash/spi_flash_chip_th.c
+components/spi_flash/spi_flash_chip_mxic_opi.c
+components/spi_flash/memspi_host_driver.c
+components/spi_flash/cache_utils.c
+components/spi_flash/spi_flash_os_func_app.c
+components/spi_flash/flash_ops.c
+components/spi_flash/flash_mmap.c
+components/spi_flash/spi_flash_os_func_noos.c
+components/spi_flash/esp_flash_spi_init.c
+components/spi_flash/esp_flash_api.c
+components/esp_libc/src/heap.c
+components/esp_libc/src/assert.c
+components/esp_libc/src/abort.c
+components/esp_libc/src/poll.c
+components/esp_libc/src/newlib_init.c
+components/esp_libc/src/reent_syscalls.c
+components/esp_libc/src/termios.c
+components/esp_libc/src/locks.c
+components/esp_libc/src/reent_init.c
+components/esp_libc/src/syscalls.c
+components/esp_libc/src/sysconf.c
+components/esp_libc/src/port/esp_time_impl.c
+components/esp_libc/src/realpath.c
+components/esp_libc/src/time.c
+components/esp_libc/src/stdatomic.c
+components/rtthread/scons/event_list.c
+components/rtthread/scons/port_compat.c
+components/log/src/log.c
+components/log/src/buffer/log_buffers.c
+components/log/src/log_print.c
+components/log/src/log_format_text.c
+components/log/src/log_timestamp_common.c
+components/log/src/log_level/log_level.c
+components/log/src/log_level/tag_log_level/tag_log_level.c
+components/log/src/log_level/tag_log_level/linked_list/log_linked_list.c
+components/log/src/os/log_timestamp.c
+components/log/src/os/log_lock.c
+components/log/src/os/log_write.c
+components/log/src/os/util.c
+components/log/src/util.c
+components/esp_driver_gpio/src/dedic_gpio.c
+components/esp_hw_support/spi_bus_lock.c
+components/esp_driver_gptimer/src/gptimer_common.c
+components/esp_driver_gpio/src/rtc_io.c
+components/esp_driver_sdspi/src/sdspi_crc.c
+components/esp_driver_gptimer/src/gptimer.c
+components/esp_driver_spi/src/gpspi/spi_master.c
+components/esp_driver_sdspi/src/sdspi_transaction.c
+components/esp_driver_gpio/src/gpio.c
+components/esp_driver_sdspi/src/sdspi_host.c
+components/esp_driver_ledc/src/ledc.c
+components/esp_driver_spi/src/gpspi/spi_slave.c
+components/esp_driver_uart/src/uart.c
+components/driver/i2c/i2c.c
+components/esp_driver_spi/src/gpspi/spi_common.c
+components/esp_driver_sdm/src/sdm.c
+components/esp_driver_rmt/src/rmt_common.c
+components/esp_driver_rmt/src/rmt_encoder.c
+components/esp_driver_rmt/src/rmt_rx.c
+components/esp_driver_rmt/src/rmt_tx.c
+components/esp_driver_i2s/i2s_std.c
+components/esp_driver_tsens/src/temperature_sensor.c
+components/esp_driver_i2s/i2s_common.c
+components/esp_driver_i2s/i2s_tdm.c
+components/esp_driver_usb_serial_jtag/src/usb_serial_jtag.c
+components/esp_driver_spi/src/gpspi/spi_slave_hd.c
+components/esp_driver_i2s/i2s_pdm.c
+components/driver/twai/twai.c
+components/rtthread/scons/idf_additions_wrapper.c
+components/pthread/pthread_local_storage.c
+components/pthread/pthread_cond_var.c
+components/pthread/pthread_rwlock.c
+components/pthread/pthread.c
+components/efuse/esp32s3/esp_efuse_table.c
+components/efuse/esp32s3/esp_efuse_utility.c
+components/efuse/esp32s3/esp_efuse_fields.c
+components/efuse/src/esp_efuse_utility.c
+components/efuse/esp32s3/esp_efuse_rtc_calib.c
+components/efuse/src/esp_efuse_api.c
+components/efuse/src/esp_efuse_fields.c
+components/efuse/src/efuse_controller/keys/with_key_purposes/esp_efuse_api_key.c
+components/esp_timer/src/esp_timer_impl_systimer.c
+components/esp_timer/src/system_time.c
+components/esp_timer/src/esp_timer.c
+components/esp_timer/src/ets_timer_legacy.c
+components/esp_timer/src/esp_timer_impl_common.c
+components/esp_hal_security/mpu_hal.c
+components/esp_hal_gpio/esp32s3/rtc_io_periph.c
+components/spi_flash/spi_flash_wrap.c
+components/spi_flash/esp32s3/spi_flash_oct_flash_init.c
+components/esp_rom/patches/esp_rom_cache_writeback_esp32s3.S
+components/esp_hal_touch_sens/touch_sens_hal.c
+components/xtensa/xtensa_intr.c
+components/xtensa/xtensa_intr_asm.S
+components/xtensa/xtensa_context.S
+components/esp_system/port/arch/xtensa/panic_arch.c
+components/esp_system/port/arch/xtensa/panic_handler_asm.S
+components/esp_system/port/arch/xtensa/debug_stubs.c
+components/esp_system/port/arch/xtensa/debug_helpers.c
+components/esp_system/port/arch/xtensa/debug_helpers_asm.S
+""")
+
+src = [PKG + '/' + s for s in _rel_src]
+
+path = [
+    # Prepended so include_compat can feed ATOMIC_VAR_INIT to the toolchains
+    # whose <stdatomic.h> dropped it (see include_compat/atomic_var_init.h).
+    cwd + '/include_compat',
+    # Include dirs of every component in `src`, resolved from their
+    # CMakeLists.txt the same way the package SConscript does it for C3/C6.
+    PKG + '/components/esp_app_format/include',
+    PKG + '/components/esp_ringbuf/include',
+    PKG + '/components/esp_pm/include',
+    PKG + '/components/app_update/include',
+    PKG + '/components/esp_common/include',
+    PKG + '/components/esp_common/src',
+    PKG + '/components/bootloader_support/include',
+    PKG + '/components/bootloader_support/private_include',
+    PKG + '/components/bootloader_support/bootloader_flash/include',
+    PKG + '/components/bootloader_support/src',
+    PKG + '/components/esp_hal_wdt/include',
+    PKG + '/components/esp_hal_wdt/esp32s3/include',
+    PKG + '/components/hal/platform_port/include',
+    PKG + '/components/hal/esp32s3/include',
+    PKG + '/components/hal/include',
+    PKG + '/components/esp_hal_gpio/include',
+    PKG + '/components/esp_hal_gpio/esp32s3/include',
+    PKG + '/components/esp_hal_gpspi/include',
+    PKG + '/components/esp_hal_gpspi/esp32s3/include',
+    PKG + '/components/esp_hal_timg/include',
+    PKG + '/components/esp_hal_timg/esp32s3/include',
+    PKG + '/components/esp_hal_ledc/include',
+    PKG + '/components/esp_hal_ledc/esp32s3/include',
+    PKG + '/components/esp_hal_i2c/esp32s3/include',
+    PKG + '/components/esp_hal_i2c/include',
+    PKG + '/components/esp_hal_uart/include',
+    PKG + '/components/esp_hal_uart/esp32s3/include',
+    PKG + '/components/esp_hal_mspi/include',
+    PKG + '/components/esp_hal_mspi/esp32s3/include',
+    PKG + '/components/esp_hal_security/esp32s3/include',
+    PKG + '/components/esp_hal_security/include',
+    PKG + '/components/esp_hal_systimer/include',
+    PKG + '/components/esp_hal_systimer/esp32s3/include',
+    PKG + '/components/esp_hal_ana_conv/include',
+    PKG + '/components/esp_hal_ana_conv/esp32s3/include',
+    PKG + '/components/esp_hal_rmt/include',
+    PKG + '/components/esp_hal_rmt/esp32s3/include',
+    PKG + '/components/esp_hal_dma/include',
+    PKG + '/components/esp_hal_dma/esp32s3/include',
+    PKG + '/components/esp_hal_clock/include',
+    PKG + '/components/esp_hal_clock/esp32s3/include',
+    PKG + '/components/esp_hal_pmu/include',
+    PKG + '/components/esp_hal_pmu/esp32s3/include',
+    PKG + '/components/esp_hal_i2s/include',
+    PKG + '/components/esp_hal_i2s/esp32s3/include',
+    PKG + '/components/soc/include',
+    PKG + '/components/soc/esp32s3',
+    PKG + '/components/soc/esp32s3/include',
+    PKG + '/components/soc/esp32s3/register',
+    PKG + '/components/esp_hw_support/include',
+    PKG + '/components/esp_hw_support/etm/include',
+    PKG + '/components/esp_hw_support/include/soc',
+    PKG + '/components/esp_hw_support/ldo/include',
+    PKG + '/components/esp_hw_support/debug_probe/include',
+    PKG + '/components/esp_hw_support/mspi/mspi_timing_tuning/include',
+    PKG + '/components/esp_hw_support/mspi/mspi_timing_tuning/tuning_scheme_impl/include',
+    PKG + '/components/esp_hw_support/mspi/mspi_intr/include',
+    PKG + '/components/esp_hw_support/power_supply/include',
+    PKG + '/components/esp_hw_support/modem/include',
+    PKG + '/components/esp_hw_support/include/soc/esp32s3',
+    PKG + '/components/esp_hw_support/port/include',
+    PKG + '/components/esp_hw_support/include/esp_private',
+    PKG + '/components/esp_hw_support/port/esp32s3/include',
+    PKG + '/components/esp_driver_dma/include',
+    PKG + '/components/esp_driver_dma/src',
+    PKG + '/components/esp_security/include',
+    PKG + '/components/esp_security/src/esp32s3',
+    PKG + '/components/esp_security/src',
+    PKG + '/components/esp_mm/include',
+    PKG + '/components/esp_system/include',
+    PKG + '/components/esp_system/port/include/private',
+    PKG + '/components/esp_system/port/include',
+    PKG + '/components/esp_libc/platform_include',
+    PKG + '/components/esp_libc/priv_include',
+    PKG + '/components/esp_libc/src',
+    PKG + '/components/esp_rom/include',
+    PKG + '/components/esp_rom/esp32s3/include',
+    PKG + '/components/esp_rom/esp32s3/include/esp32s3',
+    PKG + '/components/esp_rom/esp32s3',
+    PKG + '/components/heap/include',
+    PKG + '/components/heap/tlsf',
+    PKG + '/components/heap/rom_patches/include',
+    PKG + '/components/heap/private_include',
+    PKG + '/components/heap/tlsf/include',
+    PKG + '/components/spi_flash/include',
+    PKG + '/components/esp_partition/include',
+    PKG + '/components/rtthread/port/esp32c3',
+    PKG + '/components/rtthread/port/esp32c6',
+    PKG + '/components/log/include',
+    PKG + '/components/log/include/esp_private',
+    PKG + '/components/log/src',
+    PKG + '/components/esp_driver_gpio/include',
+    PKG + '/components/esp_driver_gpio/src',
+    PKG + '/components/esp_driver_gptimer/include',
+    PKG + '/components/esp_driver_gptimer/src',
+    PKG + '/components/esp_driver_sdspi/include',
+    PKG + '/components/esp_driver_sdspi/src',
+    PKG + '/components/esp_driver_spi/include',
+    PKG + '/components/esp_driver_spi/src',
+    PKG + '/components/esp_driver_ledc/include',
+    PKG + '/components/esp_driver_ledc/src',
+    PKG + '/components/esp_driver_uart/include',
+    PKG + '/components/esp_driver_uart/src',
+    PKG + '/components/driver/i2c/include',
+    PKG + '/components/driver/touch_sensor/include',
+    PKG + '/components/driver/twai/include',
+    PKG + '/components/driver/touch_sensor/esp32s3/include',
+    PKG + '/components/esp_driver_sdm/include',
+    PKG + '/components/esp_driver_sdm/src',
+    PKG + '/components/esp_driver_rmt/include',
+    PKG + '/components/esp_driver_rmt/src',
+    PKG + '/components/esp_driver_i2s/include',
+    PKG + '/components/esp_driver_tsens/include',
+    PKG + '/components/esp_driver_tsens/src',
+    PKG + '/components/esp_driver_usb_serial_jtag/include',
+    PKG + '/components/esp_driver_usb_serial_jtag/src',
+    PKG + '/components/pthread/include',
+    PKG + '/components/efuse/include',
+    PKG + '/components/efuse/esp32s3/include',
+    PKG + '/components/efuse/private_include',
+    PKG + '/components/efuse/esp32s3/private_include',
+    PKG + '/components/efuse/src',
+    PKG + '/components/esp_timer/include',
+    PKG + '/components/esp_timer/private_include',
+    PKG + '/components/esp_timer/src',
+    PKG + '/components/xtensa/esp32s3/include',
+    PKG + '/components/xtensa/include',
+    PKG + '/components/xtensa/baremetal',
+    PKG + '/components/esp_bootloader_format/include',
+    PKG + '/components/mbedtls/port/mbedtls_rom',
+    PKG + '/components/mbedtls/port/include',
+    PKG + '/components/mbedtls/mbedtls/include',
+    PKG + '/components/mbedtls/mbedtls/library',
+    PKG + '/components/mbedtls/mbedtls/tf-psa-crypto/core',
+    PKG + '/components/mbedtls/mbedtls/tf-psa-crypto/drivers/builtin/src',
+    PKG + '/components/mbedtls/mbedtls/tf-psa-crypto/extras',
+    PKG + '/components/mbedtls/esp_crt_bundle/include',
+    PKG + '/components/esp_hal_rtc_timer/include',
+    PKG + '/components/esp_hal_rtc_timer/esp32s3/include',
+    PKG + '/components/esp_hal_usb/include',
+    PKG + '/components/esp_hal_usb/esp32s3/include',
+    PKG + '/components/esp_hal_regi2c/include',
+    PKG + '/components/esp_hal_regi2c/esp32s3/include',
+    PKG + '/components/esp_hal_cam/include',
+    PKG + '/components/esp_hal_cam/esp32s3/include',
+    PKG + '/components/esp_blockdev/include',
+    PKG + '/components/sdmmc/include',
+    PKG + '/components/esp_psram/include',
+    PKG + '/components/esp_psram/device/include',
+    PKG + '/components/esp_psram/xip_impl/include',
+    PKG + '/components/esp_hal_twai/include',
+    PKG + '/components/esp_hal_twai/esp32s3/include',
+    PKG + '/components/esp_hal_touch_sens/esp32s3/include',
+    PKG + '/components/esp_hal_touch_sens/include',
+    PKG + '/components/esp_driver_bitscrambler/include',
+    PKG + '/components/esp_driver_bitscrambler/src',
+    PKG + '/components/esp_hal_sd/include',
+    PKG + '/components/esp_hal_sd/esp32s3/include',
+    PKG + '/components/rtthread/scons/include',
+    PKG + '/components/freertos/FreeRTOS-Kernel/portable/xtensa',
+    PKG + '/components/freertos/FreeRTOS-Kernel/portable/xtensa/include',
+    PKG + '/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos',
+    # ESP-IDF's FreeRTOS API additions; only the declarations are needed, the
+    # implementation is the fork's components/rtthread/scons/idf_additions_wrapper.c
+    PKG + '/components/freertos/esp_additions/include',
+    PKG + '/components/freertos/esp_additions',
+    PKG + '/components/freertos/config/include',
+    PKG + '/components/freertos/config/include/freertos',
+    PKG + '/components/freertos/config/xtensa/include',
+    # esp_libc owns the newlib compatibility headers; it has to be searched
+    # before the toolchain headers it wraps with #include_next.
+    PKG + '/components/esp_libc/platform_include',
+    PKG + '/components/heap/tlsf',
+    # the per-chip SoC memprot headers live under esp_hw_support/include/soc/<target>
+    PKG + '/components/esp_hw_support/include/soc/esp32s3',
+    PKG + '/components/esp_system/port/include/private',
+    PKG + '/components/esp_system/port/arch/xtensa',
+    # nested per-SoC port directories: the include-dir scan above only walks
+    # <component>/{,port/,<chip>,port/<chip>}, so component sub-directories that
+    # own a port/<chip> tree (esp_hw_support/mspi/mspi_timing_tuning here, which
+    # provides mspi_timing_tuning_configs.h) have to be listed explicitly.
+    PKG + '/components/esp_hw_support/mspi/mspi_timing_tuning/port/esp32s3',
+]
+
+# Kept last on purpose: this is ESP-IDF's FreeRTOS V11 kernel copy, searched
+# only for the two headers the FreeRTOS-Wrapper (V10.4.6) does not ship,
+# <freertos/stream_buffer.h> and <freertos/message_buffer.h>, whose handle
+# typedefs ESP-IDF's <freertos/idf_additions.h> uses.  The wrapper's own
+# FreeRTOS headers must stay ahead of it on CPPPATH, or #include_next would hand
+# <freertos/FreeRTOS.h> to the V11 copy instead; the ordering is set up by the
+# BSP SConscript.  The scons FreeRTOS shims in components/rtthread/scons/include
+# are prepended there for the same reason.
+path.append(PKG + '/components/freertos/FreeRTOS-Kernel/include')
+
+# libxt_hal.a supplies xthal_save/restore_extra_nw, xthal_window_spill_nw and
+# the coprocessor save/restore used by libcpu/xtensa and xtensa_context.S. It is
+# linked whole-archive via LINKFLAGS below: those helpers are reached only from
+# the assembler-written context code, so the linker cannot see it needs them.
+
+CPPDEFINES = [
+    'IDF_VER=\\"999\\"',
+    'PROJECT_VER=\\"999\\"',
+    '_GNU_SOURCE',
+    'MULTI_HEAP_FREERTOS',
+    'ESP_PLATFORM=1',
+    'IDF_TARGET=esp32s3',
+    '_POSIX_READER_WRITER_LOCKS',
+    'PROJECT_NAME=\\"rtthread\\"',
+    '__ets__',
+    # v6.1 moved CMD_WRAP into components/spi_flash/include/esp_flash_chips/
+    # spi_flash_defs.h.  Same value as there; defined here as well so call
+    # sites that use it without including that header still compile.
+    'CMD_WRAP=0x77',
+]
+
+
+# No mbedTLS / tf-psa-crypto include roots.  This BSP builds no TLS stack, and
+# the only file that used to pull in <psa/crypto.h> -
+# components/bootloader_support/src/bootloader_sha.c - is not part of the set
+# (see the file header).  Nothing in `src` includes a mbedtls header any more;
+# if a future option brings the crypto port back, add the roots the C3/C6 BSPs
+# pick up from the ESP-IDF package SConscript, in this same spot.
+
+# ESP-IDF's CMake build folds every component's linker fragment into the final
+# link line; the scons BSP carries its own sections.ld (see rtconfig.py LFLAGS),
+# so the pieces v6.1 newly relies on are added here by hand.
+_linker_scripts = []
+# components/esp_hal_regi2c: the ROM regi2c implementation of this SoC. The
+# fragment only exists for the targets that keep the ROM implementation.
+_regi2c_ld = os.path.join(PKG, 'components/esp_hal_regi2c/esp32s3/rom.regi2c.ld')
+if os.path.isfile(_regi2c_ld):
+    _linker_scripts.append('-Wl,-T,' + _regi2c_ld)
+# components/esp_libc: esp_rom_newlib_init_common_mutexes() lives in ROM and
+# esp_libc/src/locks.c calls it during startup.
+_rom_libc_ld = os.path.join(PKG, 'components/esp_rom/esp32s3/ld/esp32s3.rom.libc.ld')
+if os.path.isfile(_rom_libc_ld):
+    _linker_scripts.append('-Wl,-T,' + _rom_libc_ld)
+LINKFLAGS = ' '.join([str(Env.get('LINKFLAGS', ''))] + _linker_scripts
+                     + ['-L' + PKG + '/components/xtensa/esp32s3',
+                        '-Wl,--whole-archive', '-lxt_hal', '-Wl,--no-whole-archive'])
+Env['LINKFLAGS'] = LINKFLAGS
+
+# Force-feed ATOMIC_VAR_INIT for toolchains whose <stdatomic.h> dropped it
+# (esp_hw_support/esp_gpio_reserve.c, spi_bus_lock.c, spi_share_hw_ctrl.c
+# still use it; GCC 15 no longer provides it under C17+), and clear
+# CONFIG_ESP_IPC_ISR_ENABLE so esp_ipc_isr.h compiles its single-core no-op
+# branch (see the header for why). Both are prepended, so they are seen before
+# any other header of the translation unit.
+LOCAL_CFLAGS = ' -include ' + cwd + '/include_compat/rtthread_ipc_isr_off.h' \
+               ' -include ' + cwd + '/include_compat/atomic_var_init.h'
+
+group = DefineGroup('esp-idf', src, depend = ['PKG_USING_ESP_IDF'],
+                    CPPPATH = path, CPPDEFINES = CPPDEFINES,
+                    LOCAL_CFLAGS = LOCAL_CFLAGS)
+
+Return('group')

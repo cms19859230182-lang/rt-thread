@@ -15,7 +15,9 @@
 #define CONFIG_LIBC_ASSERT_BUFFER_SIZE 200
 /* ESP-IDF v6.1 split esp_log into V1/V2 variants (components/log/Kconfig). */
 #define CONFIG_LOG_VERSION 1
-#ifdef SOC_ESP32_C6
+#ifdef SOC_ESP32_S3
+#include "sdkconfig_s3.h"
+#elif defined(SOC_ESP32_C6)
 #include "sdkconfig_c6.h"
 #else
 #define CONFIG_SOC_ADC_SUPPORTED 1

@@ -1,0 +1,31 @@
+# RT-Thread building script for ESP32-S3 (Xtensa LX7) CPU port
+
+import os
+from building import *
+from env_package import find_package_path
+
+cwd = GetCurrentDir()
+
+bsp_root = os.path.normpath(os.path.join(cwd, '..', '..', '..', 'bsp', 'ESP', 'ESP32_S3'))
+# pkgs --update-force may place this under bsp/ESP/libraries rather than
+# this BSP's packages directory.
+PKG_IDF = find_package_path(bsp_root, 'ESP-IDF-latest',
+                            marker='components/xtensa/esp32s3/include')
+
+src = Glob('*.c') + Glob('*_gcc.S')
+
+# ESP-IDF v6.1 keeps the Xtensa context frames unprefixed
+# (components/xtensa/include/xtensa_context.h) and renamed the special-register
+# header to <xtensa/xt_specreg.h>; the old paths are deprecation shims that only
+# forward with a #warning.  components/xtensa/esp32s3/include carries the
+# per-SoC <xtensa/config/...> core definitions.
+CPPPATH = [
+    cwd,
+    PKG_IDF + '/components/xtensa/include',
+    PKG_IDF + '/components/xtensa/esp32s3/include',
+]
+ASFLAGS = ' -I ' + cwd
+
+group = DefineGroup('CPU', src, depend = [''], CPPPATH = CPPPATH, ASFLAGS = ASFLAGS)
+
+Return('group')
