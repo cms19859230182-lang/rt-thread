@@ -14,7 +14,8 @@
 git clone https://github.com/cms19859230182-lang/d1s-qemu
 cd d1s-qemu && scripts/fetch-qemu.sh && scripts/apply-patches.sh && scripts/build.sh
 
-# 2. 在本目录编译 RT-Thread
+# 2. 在本目录编译 RT-Thread（工具链见 README-M7.md；也可用环境变量指定，例如
+#    RTT_EXEC_PATH=/path/to/toolchain/bin RTT_CC_PREFIX=riscv64-linux-musleabi-）
 scons
 
 # 3. 启动（UART0 接到终端）
